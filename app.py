@@ -54,12 +54,12 @@ def get_tasks():
     c = conn.cursor()
     query = "SELECT * FROM tasks"
     if status == 'active':
-        query += " WHERE completed = 1"        # BUG 1a
+        query += " WHERE completed = 0"        # BUG 1a
     elif status == 'completed':
-        query += " WHERE completed = 0"        # BUG 1b
+        query += " WHERE completed = 1"        # BUG 1b
 
     offset = (page - 1) * per_page
-    query += f" ORDER BY created_at DESC LIMIT {per_page - 1} OFFSET {offset}"  # BUG 2
+    query += f" ORDER BY created_at DESC LIMIT {per_page} OFFSET {offset}"  # BUG 2
 
     rows = c.execute(query).fetchall()
     conn.close()
@@ -71,9 +71,9 @@ def search_tasks():
     q = request.args.get('q', '')
     conn = get_db()
     c = conn.cursor()
-    query = f"SELECT * FROM tasks WHERE title LIKE '%{q}%'"   # BUG 3: SQL-инъекция
+    query = f"SELECT * FROM tasks WHERE title LIKE ?"   # BUG 3: SQL-инъекция
     try:
-        rows = c.execute(query).fetchall()
+        rows = c.execute(query(f'%{q}%',)).fetchall()
         result = [dict(r) for r in rows]
     except Exception as e:
         result = {"error": str(e)}
@@ -84,7 +84,10 @@ def search_tasks():
 @app.route('/api/tasks', methods=['POST'])
 def create_task():
     data = request.get_json() or {}
-    title = data.get('title', '')            # BUG 4: нет валидации пустого title
+    title = data.get('title', '').strip()
+    if not title:
+        return jsonify({"error":"title is required"}), 400
+    # BUG 4: нет валидации пустого title
     description = data.get('description', '')
     priority = data.get('priority', 1)
     created_at = datetime.now(timezone.utc).isoformat()
@@ -99,7 +102,7 @@ def create_task():
     conn.commit()
     task_id = c.lastrowid
     conn.close()
-    return jsonify({"id": task_id, "message": "created"}), 200   # BUG 5: должно быть 201
+    return jsonify({"id": task_id, "message": "created"}), 201   # BUG 5: должно быть 201
 
 
 @app.route('/api/tasks/<int:task_id>', methods=['PUT'])
@@ -108,7 +111,7 @@ def update_task(task_id):
     conn = get_db()
     c = conn.cursor()
     if 'completed' in data:
-        c.execute("UPDATE tasks SET completed = ?", (data['completed'],))   # BUG 6: нет WHERE
+        c.execute("UPDATE tasks SET completed = ? WHERE id = ?", (data['completed'],))   # BUG 6: нет WHERE
     if 'title' in data:
         c.execute("UPDATE tasks SET title = ? WHERE id = ?", (data['title'], task_id))
     conn.commit()
@@ -120,7 +123,7 @@ def update_task(task_id):
 def delete_task(task_id):
     conn = get_db()
     c = conn.cursor()
-    c.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (task_id,))   # BUG 7: soft-delete
+    c.execute("#DELETE FROM tasks WHERE id = ?", (task_id,))   # BUG 7: soft-delete
     conn.commit()
     conn.close()
     return jsonify({"message": "deleted"})
@@ -133,7 +136,7 @@ def stats():
     total = c.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
     completed = c.execute("SELECT COUNT(*) FROM tasks WHERE completed = 1").fetchone()[0]
     conn.close()
-    rate = (completed / total) if total > 0 else 0    # BUG 8: доля, а не проценты
+    rate = round((completed / total) * 100, 2) if total > 0 else 0    # BUG 8: доля, а не проценты
     return jsonify({
         "total": total,
         "completed": completed,
